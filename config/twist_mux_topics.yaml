@@ -1,9 +1,17 @@
 # Input topics handled/muxed.
 # For each topic:
-# - name    : name identifier to select the topic (*sub-namespace, see below)
-# - topic   : input topic of geometry_msgs::Twist type
-# - timeout : timeout in seconds to start discarding old messages, and use 0.0 speed instead
-# - priority: priority in the range [0, 255]; the higher the more priority over other topics
+# - name       : name identifier to select the topic (*sub-namespace, see below)
+# - topic      : input topic name
+# - timeout    : timeout in seconds to start discarding old messages, and use 0.0 speed instead
+# - priority   : priority in the range [0, 255]; the higher the more priority over other topics
+# - use_stamped: (optional) if true, subscribe to geometry_msgs::TwistStamped;
+#                if false, subscribe to geometry_msgs::Twist.
+#                Defaults to the global use_stamped parameter.
+#
+# Global parameters:
+# - use_stamped     : if true, output topic publishes TwistStamped; if false, Twist. Default: true.
+# - stamped_frame_id: frame_id set in the header when converting Twist input to TwistStamped output.
+#                     Default: "" (empty string).
 
 twist_mux:
   ros__parameters:

@@ -105,13 +105,23 @@ protected:
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_pub_;
   rclcpp::Publisher<geometry_msgs::msg::TwistStamped>::SharedPtr cmd_pub_stamped_;
 
-  geometry_msgs::msg::Twist last_cmd_;
-  geometry_msgs::msg::TwistStamped last_cmd_stamped_;
+  /// @brief Whether the output topic uses TwistStamped (true) or Twist (false).
+  bool use_stamped_;
+
+  /// @brief Frame ID to use in the header when converting Twist to TwistStamped.
+  std::string stamped_frame_id_;
 
   template<typename T>
   void getTopicHandles(const std::string & param_name, handle_container<T> & topic_hs);
 
+  /// @brief Load velocity topic handles with per-topic use_stamped support.
+  void getVelocityTopicHandles(
+    const std::string & param_name, bool default_use_stamped);
+
   int getLockPriority();
+
+  /// @brief Return the name of the highest-priority unmasked velocity handle across both containers.
+  std::string getTopVelocityName();
 
   std::shared_ptr<diagnostics_type> diagnostics_;
   std::shared_ptr<status_type> status_;

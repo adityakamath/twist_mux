@@ -27,7 +27,7 @@
 import rclpy
 import numpy as np
 
-from geometry_msgs.msg import Twist
+from geometry_msgs.msg import Twist, TwistStamped
 from rclpy.action import ActionServer
 from rclpy.executors import ExternalShutdownException
 from rclpy.qos import QoSProfile, QoSDurabilityPolicy
@@ -221,11 +221,16 @@ class JoystickRelay(Node):
 
         self._current_priority = Bool()
         self._current_priority.data = self.declare_parameter('priority', True).value
+        # NOTE: joystick_relay defaults use_stamped to False. If twist_mux is
+        # configured with use_stamped: true, set this parameter to true as well
+        # so that joy_vel_out publishes TwistStamped (matching the mux input type).
+        self._use_stamped = self.declare_parameter('use_stamped', False).value
         self._velocity_control = VelocityControl(self)
 
         self._marker = TextMarker(self, 0.5, 2.0)
 
-        self._pub_cmd = self.create_publisher(Twist, 'joy_vel_out', 1)
+        pub_type = TwistStamped if self._use_stamped else Twist
+        self._pub_cmd = self.create_publisher(pub_type, 'joy_vel_out', 1)
         self._subscriber = self.create_subscription(
             Twist, 'joy_vel_in', self._forward_cmd, 1)
 
@@ -263,9 +268,27 @@ class JoystickRelay(Node):
             self, 'joy_turbo_reset', JoyTurbo,
             self._velocity_control.reset_turbo)
 
+    def _wrap_twist(self, twist: Twist) -> Twist | TwistStamped:
+        """Wrap a Twist in a TwistStamped if use_stamped is enabled.
+
+        Args:
+            twist: The Twist message to optionally wrap.
+
+        Returns:
+            A TwistStamped with current timestamp if use_stamped is True,
+            otherwise the original Twist unchanged.
+        """
+        if self._use_stamped:
+            stamped = TwistStamped()
+            stamped.header.stamp = self.get_clock().now().to_msg()
+            stamped.twist = twist
+            return stamped
+        return twist
+
     def _forward_cmd(self, cmd):
         if self._current_priority.data:
-            self._pub_cmd.publish(self._velocity_control.scale_twist(cmd))
+            self._pub_cmd.publish(
+                self._wrap_twist(self._velocity_control.scale_twist(cmd)))
 
         self._marker.update(self._current_priority.data)
 
@@ -278,7 +301,7 @@ class JoystickRelay(Node):
 
         # Reset velocity to 0:
         if self._current_priority.data:
-            self._pub_cmd.publish(Twist())
+            self._pub_cmd.publish(self._wrap_twist(Twist()))
 
     def _timer_callback(self):
         self._marker.update(self._current_priority.data)
