@@ -77,30 +77,28 @@ TwistMux::TwistMux()
 
 void TwistMux::init()
 {
-  // Get use stamped parameter
+  // Get global use_stamped parameter (controls output type and per-topic default).
   bool use_stamped = true;
 
   auto nh = std::shared_ptr<rclcpp::Node>(this, [](rclcpp::Node *) {});
 
   if (!nh->get_parameter("use_stamped", use_stamped))
     RCLCPP_INFO(nh->get_logger(), "\"use_stamped\" is not declared as parameter, defaulting to \"true\".");
+  use_stamped_ = use_stamped;
+
+  // Frame ID used in the header when converting Twist to TwistStamped output.
+  nh->get_parameter("stamped_frame_id", stamped_frame_id_);
 
   /// Get topics and locks:
-  if(use_stamped)
-  {
-    velocity_stamped_hs_ = std::make_shared<velocity_stamped_topic_container>();
-    getTopicHandles("topics", *velocity_stamped_hs_);
-  }
-  else
-  {
-    velocity_hs_ = std::make_shared<velocity_topic_container>();
-    getTopicHandles("topics", *velocity_hs_);
-  }
+  velocity_hs_ = std::make_shared<velocity_topic_container>();
+  velocity_stamped_hs_ = std::make_shared<velocity_stamped_topic_container>();
+  getVelocityTopicHandles("topics", use_stamped_);
+
   lock_hs_ = std::make_shared<lock_topic_container>();
   getTopicHandles("locks", *lock_hs_);
 
   /// Publisher for output topic:
-  if(use_stamped)
+  if(use_stamped_)
   {
     cmd_pub_stamped_ =
       this->create_publisher<geometry_msgs::msg::TwistStamped>(
@@ -115,13 +113,29 @@ void TwistMux::init()
       rclcpp::QoS(rclcpp::KeepLast(1)));
   }
 
+  // Reject runtime changes to use_stamped: only one publisher is created, so
+  // flipping use_stamped_ at runtime would dereference a null publisher and crash.
+  this->add_on_set_parameters_callback(
+    [this](const std::vector<rclcpp::Parameter> & params)
+    {
+      rcl_interfaces::msg::SetParametersResult result;
+      result.successful = true;
+      for (const auto & param : params) {
+        if (param.get_name() == "use_stamped") {
+          result.successful = false;
+          result.reason = "use_stamped cannot be changed at runtime";
+          return result;
+        }
+      }
+      return result;
+    });
+
   /// Diagnostics:
   diagnostics_ = std::make_shared<diagnostics_type>(this);
   status_ = std::make_shared<status_type>();
   status_->velocity_hs = velocity_hs_;
   status_->velocity_stamped_hs = velocity_stamped_hs_;
   status_->lock_hs = lock_hs_;
-  status_->use_stamped = use_stamped;
 
   diagnostics_timer_ = this->create_wall_timer(
     DIAGNOSTICS_PERIOD, [this]() -> void {
@@ -132,19 +146,30 @@ void TwistMux::init()
 void TwistMux::updateDiagnostics()
 {
   status_->priority = getLockPriority();
-  RCLCPP_DEBUG(get_logger(), "updateDiagnostics: lol");
   diagnostics_->updateStatus(status_);
   RCLCPP_DEBUG(get_logger(), "returned from updateStatus");
 }
 
 void TwistMux::publishTwist(const geometry_msgs::msg::Twist::ConstSharedPtr & msg)
 {
-  cmd_pub_->publish(*msg);
+  if (use_stamped_) {
+    geometry_msgs::msg::TwistStamped stamped;
+    stamped.header.stamp = this->now();
+    stamped.header.frame_id = stamped_frame_id_;
+    stamped.twist = *msg;
+    cmd_pub_stamped_->publish(stamped);
+  } else {
+    cmd_pub_->publish(*msg);
+  }
 }
 
 void TwistMux::publishTwistStamped(const geometry_msgs::msg::TwistStamped::ConstSharedPtr & msg)
 {
-  cmd_pub_stamped_->publish(*msg);
+  if (use_stamped_) {
+    cmd_pub_stamped_->publish(*msg);
+  } else {
+    cmd_pub_->publish(msg->twist);
+  }
 }
 
 template<typename T>
@@ -180,6 +205,47 @@ void TwistMux::getTopicHandles(const std::string & param_name, std::list<T> & to
   }
 }
 
+void TwistMux::getVelocityTopicHandles(
+  const std::string & param_name, bool default_use_stamped)
+{
+  RCLCPP_DEBUG(get_logger(), "getVelocityTopicHandles: %s", param_name.c_str());
+
+  rcl_interfaces::msg::ListParametersResult list = list_parameters({param_name}, 10);
+
+  try {
+    for (auto prefix : list.prefixes) {
+      std::string topic;
+      double timeout = 0;
+      int priority = 0;
+      bool topic_use_stamped = default_use_stamped;
+
+      auto nh = std::shared_ptr<rclcpp::Node>(this, [](rclcpp::Node *) {});
+
+      fetch_param(nh, prefix + ".topic", topic);
+      fetch_param(nh, prefix + ".timeout", timeout);
+      fetch_param(nh, prefix + ".priority", priority);
+
+      // Per-topic use_stamped is optional; falls back to the global default
+      try {
+        fetch_param(nh, prefix + ".use_stamped", topic_use_stamped);
+      } catch (const ParamsHelperException &) {
+        // Not specified, use default
+      }
+
+      if (topic_use_stamped) {
+        velocity_stamped_hs_->emplace_back(
+          prefix, topic, std::chrono::duration<double>(timeout), priority, this);
+      } else {
+        velocity_hs_->emplace_back(
+          prefix, topic, std::chrono::duration<double>(timeout), priority, this);
+      }
+    }
+  } catch (const ParamsHelperException & e) {
+    RCLCPP_FATAL(get_logger(), "Error parsing params '%s':\n\t%s", param_name.c_str(), e.what());
+    throw e;
+  }
+}
+
 int TwistMux::getLockPriority()
 {
   LockTopicHandle::priority_type priority = 0;
@@ -200,7 +266,7 @@ int TwistMux::getLockPriority()
   return priority;
 }
 
-bool TwistMux::hasPriority(const VelocityTopicHandle & twist)
+std::string TwistMux::getTopVelocityName()
 {
   const auto lock_priority = getLockPriority();
 
@@ -208,7 +274,7 @@ bool TwistMux::hasPriority(const VelocityTopicHandle & twist)
   std::string velocity_name = "NULL";
 
   /// max_element on the priority of velocity topic handles satisfying
-  /// that is NOT masked by the lock priority:
+  /// that is NOT masked by the lock priority (check both containers):
   for (const auto & velocity_h : *velocity_hs_) {
     if (!velocity_h.isMasked(lock_priority)) {
       const auto velocity_priority = velocity_h.getPriority();
@@ -219,19 +285,6 @@ bool TwistMux::hasPriority(const VelocityTopicHandle & twist)
     }
   }
 
-  return twist.getName() == velocity_name;
-}
-
-
-bool TwistMux::hasPriorityStamped(const VelocityStampedTopicHandle & twist)
-{
-  const auto lock_priority = getLockPriority();
-
-  LockTopicHandle::priority_type priority = 0;
-  std::string velocity_name = "NULL";
-
-  /// max_element on the priority of velocity topic handles satisfying
-  /// that is NOT masked by the lock priority:
   for (const auto & velocity_stamped_h : *velocity_stamped_hs_) {
     if (!velocity_stamped_h.isMasked(lock_priority)) {
       const auto velocity_priority = velocity_stamped_h.getPriority();
@@ -242,7 +295,17 @@ bool TwistMux::hasPriorityStamped(const VelocityStampedTopicHandle & twist)
     }
   }
 
-  return twist.getName() == velocity_name;
+  return velocity_name;
+}
+
+bool TwistMux::hasPriority(const VelocityTopicHandle & twist)
+{
+  return twist.getName() == getTopVelocityName();
+}
+
+bool TwistMux::hasPriorityStamped(const VelocityStampedTopicHandle & twist)
+{
+  return twist.getName() == getTopVelocityName();
 }
 
 }  // namespace twist_mux
