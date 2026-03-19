@@ -113,6 +113,8 @@ protected:
 
   int getLockPriority();
 
+  std::string getTopVelocityName();
+
   std::shared_ptr<diagnostics_type> diagnostics_;
   std::shared_ptr<status_type> status_;
 };

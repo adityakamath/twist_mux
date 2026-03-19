@@ -224,65 +224,37 @@ int TwistMux::getLockPriority()
   return priority;
 }
 
-bool TwistMux::hasPriority(const VelocityTopicHandle & twist)
+std::string TwistMux::getTopVelocityName()
 {
   const auto lock_priority = getLockPriority();
-
   LockTopicHandle::priority_type priority = 0;
   std::string velocity_name = "NULL";
 
   for (const auto & velocity_h : *velocity_hs_) {
-    if (!velocity_h.isMasked(lock_priority)) {
-      const auto velocity_priority = velocity_h.getPriority();
-      if (priority < velocity_priority) {
-        priority = velocity_priority;
-        velocity_name = velocity_h.getName();
-      }
+    if (!velocity_h.isMasked(lock_priority) && velocity_h.getPriority() > priority) {
+      priority = velocity_h.getPriority();
+      velocity_name = velocity_h.getName();
     }
   }
 
   for (const auto & velocity_stamped_h : *velocity_stamped_hs_) {
-    if (!velocity_stamped_h.isMasked(lock_priority)) {
-      const auto velocity_priority = velocity_stamped_h.getPriority();
-      if (priority < velocity_priority) {
-        priority = velocity_priority;
-        velocity_name = velocity_stamped_h.getName();
-      }
+    if (!velocity_stamped_h.isMasked(lock_priority) && velocity_stamped_h.getPriority() > priority) {
+      priority = velocity_stamped_h.getPriority();
+      velocity_name = velocity_stamped_h.getName();
     }
   }
 
-  return twist.getName() == velocity_name;
+  return velocity_name;
 }
 
+bool TwistMux::hasPriority(const VelocityTopicHandle & twist)
+{
+  return twist.getName() == getTopVelocityName();
+}
 
 bool TwistMux::hasPriorityStamped(const VelocityStampedTopicHandle & twist)
 {
-  const auto lock_priority = getLockPriority();
-
-  LockTopicHandle::priority_type priority = 0;
-  std::string velocity_name = "NULL";
-
-  for (const auto & velocity_h : *velocity_hs_) {
-    if (!velocity_h.isMasked(lock_priority)) {
-      const auto velocity_priority = velocity_h.getPriority();
-      if (priority < velocity_priority) {
-        priority = velocity_priority;
-        velocity_name = velocity_h.getName();
-      }
-    }
-  }
-
-  for (const auto & velocity_stamped_h : *velocity_stamped_hs_) {
-    if (!velocity_stamped_h.isMasked(lock_priority)) {
-      const auto velocity_priority = velocity_stamped_h.getPriority();
-      if (priority < velocity_priority) {
-        priority = velocity_priority;
-        velocity_name = velocity_stamped_h.getName();
-      }
-    }
-  }
-
-  return twist.getName() == velocity_name;
+  return twist.getName() == getTopVelocityName();
 }
 
 }  // namespace twist_mux
