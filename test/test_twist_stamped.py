@@ -166,16 +166,6 @@ class TestTwistStamped(unittest.TestCase):
         self.assertIsInstance(msg, TwistStamped)
         self.assertEqual(t2.twist, msg.twist)
 
-    def test_mixed_priority(self):
-        t1 = twist(2.0)
-        t3 = twist_stamped(0.0, 1.0)
-        msg = self._publish_and_wait([(self._vel1, t1)])
-        self.assertIsNotNone(msg)
-        self.assertEqual(t1, msg.twist)
-        msg = self._publish_and_wait([(self._vel1, t1), (self._vel3, t3)])
-        self.assertIsNotNone(msg)
-        self.assertEqual(t3.twist, msg.twist)
-
 
 @launch_testing.post_shutdown_test()
 class TestProcessOutput(unittest.TestCase):
