@@ -77,30 +77,21 @@ TwistMux::TwistMux()
 
 void TwistMux::init()
 {
-  // Get use stamped parameter
-  bool use_stamped = true;
-
   auto nh = std::shared_ptr<rclcpp::Node>(this, [](rclcpp::Node *) {});
 
-  if (!nh->get_parameter("use_stamped", use_stamped))
+  if (!nh->get_parameter("use_stamped", use_stamped_))
     RCLCPP_INFO(nh->get_logger(), "\"use_stamped\" is not declared as parameter, defaulting to \"true\".");
 
-  /// Get topics and locks:
-  if(use_stamped)
-  {
-    velocity_stamped_hs_ = std::make_shared<velocity_stamped_topic_container>();
-    getTopicHandles("topics", *velocity_stamped_hs_);
-  }
-  else
-  {
-    velocity_hs_ = std::make_shared<velocity_topic_container>();
-    getTopicHandles("topics", *velocity_hs_);
-  }
+  velocity_hs_ = std::make_shared<velocity_topic_container>();
+  velocity_stamped_hs_ = std::make_shared<velocity_stamped_topic_container>();
+
+  getTopicHandles("topics", *velocity_hs_);
+  getTopicHandles("topics", *velocity_stamped_hs_);
+
   lock_hs_ = std::make_shared<lock_topic_container>();
   getTopicHandles("locks", *lock_hs_);
 
-  /// Publisher for output topic:
-  if(use_stamped)
+  if(use_stamped_)
   {
     cmd_pub_stamped_ =
       this->create_publisher<geometry_msgs::msg::TwistStamped>(
@@ -115,13 +106,11 @@ void TwistMux::init()
       rclcpp::QoS(rclcpp::KeepLast(1)));
   }
 
-  /// Diagnostics:
   diagnostics_ = std::make_shared<diagnostics_type>(this);
   status_ = std::make_shared<status_type>();
   status_->velocity_hs = velocity_hs_;
   status_->velocity_stamped_hs = velocity_stamped_hs_;
   status_->lock_hs = lock_hs_;
-  status_->use_stamped = use_stamped;
 
   diagnostics_timer_ = this->create_wall_timer(
     DIAGNOSTICS_PERIOD, [this]() -> void {
@@ -139,12 +128,23 @@ void TwistMux::updateDiagnostics()
 
 void TwistMux::publishTwist(const geometry_msgs::msg::Twist::ConstSharedPtr & msg)
 {
-  cmd_pub_->publish(*msg);
+  if (use_stamped_) {
+    geometry_msgs::msg::TwistStamped stamped;
+    stamped.header.stamp = this->now();
+    stamped.twist = *msg;
+    cmd_pub_stamped_->publish(stamped);
+  } else {
+    cmd_pub_->publish(*msg);
+  }
 }
 
 void TwistMux::publishTwistStamped(const geometry_msgs::msg::TwistStamped::ConstSharedPtr & msg)
 {
-  cmd_pub_stamped_->publish(*msg);
+  if (use_stamped_) {
+    cmd_pub_stamped_->publish(*msg);
+  } else {
+    cmd_pub_->publish(msg->twist);
+  }
 }
 
 template<typename T>
@@ -200,15 +200,13 @@ int TwistMux::getLockPriority()
   return priority;
 }
 
-bool TwistMux::hasPriority(const VelocityTopicHandle & twist)
+std::string TwistMux::getTopVelocityName()
 {
   const auto lock_priority = getLockPriority();
 
   LockTopicHandle::priority_type priority = 0;
   std::string velocity_name = "NULL";
 
-  /// max_element on the priority of velocity topic handles satisfying
-  /// that is NOT masked by the lock priority:
   for (const auto & velocity_h : *velocity_hs_) {
     if (!velocity_h.isMasked(lock_priority)) {
       const auto velocity_priority = velocity_h.getPriority();
@@ -219,19 +217,6 @@ bool TwistMux::hasPriority(const VelocityTopicHandle & twist)
     }
   }
 
-  return twist.getName() == velocity_name;
-}
-
-
-bool TwistMux::hasPriorityStamped(const VelocityStampedTopicHandle & twist)
-{
-  const auto lock_priority = getLockPriority();
-
-  LockTopicHandle::priority_type priority = 0;
-  std::string velocity_name = "NULL";
-
-  /// max_element on the priority of velocity topic handles satisfying
-  /// that is NOT masked by the lock priority:
   for (const auto & velocity_stamped_h : *velocity_stamped_hs_) {
     if (!velocity_stamped_h.isMasked(lock_priority)) {
       const auto velocity_priority = velocity_stamped_h.getPriority();
@@ -242,7 +227,17 @@ bool TwistMux::hasPriorityStamped(const VelocityStampedTopicHandle & twist)
     }
   }
 
-  return twist.getName() == velocity_name;
+  return velocity_name;
+}
+
+bool TwistMux::hasPriority(const VelocityTopicHandle & twist)
+{
+  return twist.getName() == getTopVelocityName();
+}
+
+bool TwistMux::hasPriorityStamped(const VelocityStampedTopicHandle & twist)
+{
+  return twist.getName() == getTopVelocityName();
 }
 
 }  // namespace twist_mux
