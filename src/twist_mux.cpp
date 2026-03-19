@@ -82,6 +82,8 @@ void TwistMux::init()
   if (!nh->get_parameter("use_stamped", use_stamped_))
     RCLCPP_INFO(nh->get_logger(), "\"use_stamped\" is not declared as parameter, defaulting to \"true\".");
 
+  nh->get_parameter("stamped_frame_id", stamped_frame_id_);
+
   velocity_hs_ = std::make_shared<velocity_topic_container>();
   velocity_stamped_hs_ = std::make_shared<velocity_stamped_topic_container>();
 
@@ -152,6 +154,7 @@ void TwistMux::publishTwist(const geometry_msgs::msg::Twist::ConstSharedPtr & ms
   if (use_stamped_) {
     geometry_msgs::msg::TwistStamped stamped;
     stamped.header.stamp = this->now();
+    stamped.header.frame_id = stamped_frame_id_;
     stamped.twist = *msg;
     cmd_pub_stamped_->publish(stamped);
   } else {
