@@ -85,8 +85,29 @@ void TwistMux::init()
   velocity_hs_ = std::make_shared<velocity_topic_container>();
   velocity_stamped_hs_ = std::make_shared<velocity_stamped_topic_container>();
 
-  getTopicHandles("topics", *velocity_hs_);
-  getTopicHandles("topics", *velocity_stamped_hs_);
+  rcl_interfaces::msg::ListParametersResult list = list_parameters({"topics"}, 10);
+  for (auto prefix : list.prefixes) {
+    std::string topic;
+    double timeout = 0;
+    int priority = 0;
+    bool topic_use_stamped = use_stamped_;
+
+    fetch_param(nh, prefix + ".topic", topic);
+    fetch_param(nh, prefix + ".timeout", timeout);
+    fetch_param(nh, prefix + ".priority", priority);
+
+    try {
+      fetch_param(nh, prefix + ".use_stamped", topic_use_stamped);
+    } catch (const ParamsHelperException &) {}
+
+    if (topic_use_stamped) {
+      velocity_stamped_hs_->emplace_back(
+        prefix, topic, std::chrono::duration<double>(timeout), priority, this);
+    } else {
+      velocity_hs_->emplace_back(
+        prefix, topic, std::chrono::duration<double>(timeout), priority, this);
+    }
+  }
 
   lock_hs_ = std::make_shared<lock_topic_container>();
   getTopicHandles("locks", *lock_hs_);
