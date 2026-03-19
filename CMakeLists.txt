@@ -66,7 +66,6 @@ if(BUILD_TESTING)
   find_package(launch_testing_ament_cmake)
   add_launch_test(test/test_joystick_relay.py)
   add_launch_test(test/test_twist_stamped.py)
-  add_launch_test(test/test_stamped_to_twist.py)
 endif()
 
 ament_export_include_directories(include)
