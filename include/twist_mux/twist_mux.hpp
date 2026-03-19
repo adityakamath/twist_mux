@@ -105,13 +105,15 @@ protected:
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_pub_;
   rclcpp::Publisher<geometry_msgs::msg::TwistStamped>::SharedPtr cmd_pub_stamped_;
 
-  geometry_msgs::msg::Twist last_cmd_;
-  geometry_msgs::msg::TwistStamped last_cmd_stamped_;
+  bool use_stamped_;
+  std::string stamped_frame_id_;
 
   template<typename T>
   void getTopicHandles(const std::string & param_name, handle_container<T> & topic_hs);
 
   int getLockPriority();
+
+  std::string getTopVelocityName();
 
   std::shared_ptr<diagnostics_type> diagnostics_;
   std::shared_ptr<status_type> status_;

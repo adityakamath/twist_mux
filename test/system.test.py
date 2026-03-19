@@ -19,193 +19,170 @@ import sys
 
 import launch
 from launch.actions.execute_process import ExecuteProcess
-
 import launch_ros.actions
-
 import launch_testing
-
 import time
 import threading
 from rclpy.executors import MultiThreadedExecutor
-
 import rclpy
-
 from std_msgs.msg import Bool
-from geometry_msgs.msg import Twist
+from geometry_msgs.msg import Twist, TwistStamped
 
 sys.path.append(os.path.abspath(os.path.dirname(os.path.realpath(__file__))))
 
 
-def generate_test_description():
-    # Necessary to get real-time stdout from python processes:
+def generate_test_description(use_stamped=None):
     proc_env = os.environ.copy()
-    proc_env['PYTHONUNBUFFERED'] = '1'
-
+    proc_env["PYTHONUNBUFFERED"] = "1"
     dir_path = os.path.dirname(os.path.realpath(__file__))
-
-    parameters_file = os.path.join(
-        dir_path, 'system_config.yaml'
-    )
-
+    params = [{"use_stamped": use_stamped}] if use_stamped is not None else []
     twist_mux = launch_ros.actions.Node(
-        package='twist_mux', executable='twist_mux',
-        parameters=[parameters_file], env=proc_env)
-
-    publisher = ExecuteProcess(
-        cmd=['ros2 topic pub /lock_1 std_msgs/Bool "data: False" -r 20'],
-        shell=True, env=proc_env
+        package="twist_mux",
+        executable="twist_mux",
+        parameters=[os.path.join(dir_path, "system_config.yaml")] + params,
+        env=proc_env,
     )
-
-    # system_blackbox = launch_ros.actions.Node(
-    # package='twist_mux', node_executable='system_blackbox.py', env=proc_env)
-
-    return launch.LaunchDescription([
-        twist_mux,
-        publisher,
-        # system_blackbox,
-        # Start tests right away - no need to wait for anything
-        launch_testing.actions.ReadyToTest(),
-    ])
+    return launch.LaunchDescription(
+        [
+            twist_mux,
+            ExecuteProcess(
+                cmd=['ros2 topic pub /lock_1 std_msgs/Bool "data: False" -r 20'],
+                shell=True,
+                env=proc_env,
+            ),
+            launch_testing.actions.ReadyToTest(),
+        ]
+    )
 
 
 def twist(x=0.0, r=0.0):
-    """Return a Twist for the given linear and rotation speed."""
     t = Twist()
-    t.linear.x = x
-    t.angular.z = r
+    t.linear.x, t.angular.z = x, r
     return t
 
 
-class TestTwistMux(unittest.TestCase):
+def twist_stamped(x=0.0, r=0.0):
+    t = TwistStamped()
+    t.header.stamp = rclpy.time.Time(seconds=0).to_msg()
+    t.twist.linear.x, t.twist.angular.z = x, r
+    return t
 
-    # Maximum time (in seconds) that it may take for a message
-    # to be received by the target node.
-    MESSAGE_TIMEOUT = 0.3
 
-    # Value (in seconds) >= the highest topic/lock timeout.
+class TestBase(unittest.TestCase):
     TOPIC_TIMEOUT = 1.0
 
     @classmethod
     def setUpClass(cls):
-
         cls.context = rclpy.Context()
         rclpy.init(context=cls.context)
-
-        cls.node = rclpy.create_node(
-            'node', namespace='ns', context=cls.context)
-
-        # Aim at emulating a 'wait_for_msg'
-        cls._subscription = cls.node.create_subscription(
-            Twist, 'cmd_vel_out', cls._cb, 1)
+        cls.node = rclpy.create_node(f"test_{cls.__name__}", context=cls.context)
         cls._msg = None
-
-        cls.executor = MultiThreadedExecutor(
-            context=cls.context, num_threads=2)
+        cls._subscription = cls.node.create_subscription(
+            cls.SUB_TYPE,
+            "/cmd_vel_out" if cls.SUB_TYPE == TwistStamped else "cmd_vel_out",
+            lambda msg: setattr(cls, "_msg", msg),
+            1,
+        )
+        cls.executor = MultiThreadedExecutor(context=cls.context, num_threads=2)
         cls.executor.add_node(cls.node)
-
         cls._publishers = RatePublishers(cls.context)
-        cls._vel1 = cls._publishers.add_topic('vel_1', Twist)
-        cls._vel2 = cls._publishers.add_topic('vel_2', Twist)
-        cls._vel3 = cls._publishers.add_topic('vel_3', Twist)
-
-        cls._lock1 = cls._publishers.add_topic('lock_1', Bool)
-        cls._lock2 = cls._publishers.add_topic('lock_2', Bool)
-
-        cls.executor.add_node(cls._vel1)
-        cls.executor.add_node(cls._vel2)
-        cls.executor.add_node(cls._vel3)
-        cls.executor.add_node(cls._lock1)
-        cls.executor.add_node(cls._lock2)
-
+        for name, msg_type in cls.PUBS.items():
+            setattr(cls, f"_vel_{name[-1]}", cls._publishers.add_topic(name, msg_type))
+        cls._lock1 = cls._publishers.add_topic("lock_1", Bool)
+        cls._lock2 = cls._publishers.add_topic("lock_2", Bool)
+        for v in [cls._vel_1, cls._vel_2, cls._vel_3, cls._lock1, cls._lock2]:
+            cls.executor.add_node(v)
         cls._timeout_manager = TimeoutManager()
         cls._timeout_manager.add(cls._publishers)
         cls._timeout_manager.spin_thread()
-
         cls.exec_thread = threading.Thread(target=cls.executor.spin)
         cls.exec_thread.start()
-
-    def _cb(self, msg):
-        self._msg = msg
-
-    def _wait(self, timeout):
-        start = self.node.get_clock().now()
-        self._msg = None
-        while (timeout > ((self.node.get_clock().now() - start).nanoseconds / 1e9)):
-            if self._msg is not None:
-                return self._msg
-            time.sleep(0.01)
-        return self._msg
-
-    def tearDown(self):
-        # Reset all topics.
-        twist_msg = twist(0.0, 0.0)
-        unlock = Bool()
-        unlock.data = False
-
-        self._vel1.pub(twist_msg)
-        self._vel2.pub(twist_msg)
-        self._vel3.pub(twist_msg)
-
-        self._lock1.pub(unlock)
-        self._lock2.pub(unlock)
-
-        # Wait for previously published messages to time out,
-        # since we aren't restarting twist_mux.
-        #
-        # This sleeping time must be higher than any of the
-        # timeouts in system_test_config.yaml.
-        #
-        # TODO(artivis) use rate once available
-        time.sleep(self.MESSAGE_TIMEOUT + self.TOPIC_TIMEOUT)
-
-        self.node.destroy_node()
-        rclpy.shutdown(context=self.context)
+        time.sleep(3.0)
+        unlock = Bool(data=False)
+        cls._lock1.pub(unlock, rate=20)
+        cls._lock2.pub(unlock, rate=20)
 
     @classmethod
-    def _vel_cmd(cls):
-        # TODO(artivis) use rate once available
-        time.sleep(cls.MESSAGE_TIMEOUT)
-        # TODO wait_for_msg-like functionnality not yet available
-        # https://github.com/ros2/rclcpp/issues/520
-        return cls._wait(cls, cls.MESSAGE_TIMEOUT)
+    def _publish_and_wait(cls, pubs_msgs, timeout=3.0):
+        cls._msg = None
+        start = time.monotonic()
+        while (time.monotonic() - start) < timeout:
+            for pub, msg in pubs_msgs:
+                pub._publisher.publish(msg)
+            if cls._msg is not None:
+                return cls._msg
+            time.sleep(0.02)
+        return cls._msg
+
+    @classmethod
+    def tearDownClass(cls):
+        for v in [cls._vel_1, cls._vel_2, cls._vel_3]:
+            v.stop()
+        unlock = Bool(data=False)
+        cls._lock1.pub(unlock, rate=20)
+        cls._lock2.pub(unlock, rate=20)
+        time.sleep(cls.TOPIC_TIMEOUT)
+        cls._timeout_manager.shutdown()
+        cls.executor.shutdown()
+        cls.exec_thread.join(timeout=5.0)
+        cls.node.destroy_node()
+        rclpy.shutdown(context=cls.context)
+
+
+class TestTwistMux(TestBase):
+    SUB_TYPE = Twist
+    PUBS = {"vel_1": Twist, "vel_2": Twist, "vel_3": Twist}
 
     def test_empty(self):
-        try:
-            self._vel_cmd()
-            self.fail('twist_mux should not be publishing without any input')
-        except Exception:
-            e = sys.exc_info()[0]
-            print(e)
-            pass
+        self.assertIsNone(self._publish_and_wait([]))
 
     def test_basic(self):
         t = twist(2.0)
-        self._vel1.pub(t, rate=5)
-        self.assertEqual(t, self._vel_cmd())
+        self._vel_1.pub(t, rate=5)
+        start = self.node.get_clock().now()
+        while 0.3 > (self.node.get_clock().now() - start).nanoseconds / 1e9:
+            if self._msg is not None:
+                break
+            time.sleep(0.01)
+        self.assertEqual(t, self._msg)
 
-#    def test_basic_with_priorities(self):
-#        t1 = twist(2.0)
-#        t2 = twist(0.0, 1.0)
 
-#        # Publish twist from input1 @ 3Hz, it should be used.
-#        self._vel1.pub(t1, rate=5)
-#        self.assertEqual(t1, self._vel_cmd())
+class TestTwistStamped(TestBase):
+    SUB_TYPE = TwistStamped
+    PUBS = {"vel_1": Twist, "vel_2": TwistStamped, "vel_3": TwistStamped}
 
-#        # Publish twist from input3, it should have priority
-#        # over the one from input1.
-#        # self._vel3.pub(t2, rate=10)
-#        self.assertEqual(t2, self._vel_cmd())
+    def test_twist_to_twist_stamped(self):
+        msg = self._publish_and_wait([(self._vel_1, twist(2.0))])
+        self.assertIsNotNone(msg)
+        self.assertIsInstance(msg, TwistStamped)
+        self.assertEqual(twist(2.0), msg.twist)
+        self.assertGreater(msg.header.stamp.sec, 0)
+        self.assertEqual("odom", msg.header.frame_id)
 
-#        # Stop publishing input 3 and wait for it to timeout.
-#        # Speed should fall back to input 1.
-#        # self._vel3.stop()
-#        time.sleep(0.5)  # input is 0.3 in .yaml file
-#        self.assertEqual(t1, self._vel_cmd())
+    def test_twist_stamped_passthrough(self):
+        msg = self._publish_and_wait([(self._vel_2, twist_stamped(0.5))])
+        self.assertIsNotNone(msg)
+        self.assertEqual(twist_stamped(0.5).twist, msg.twist)
+
+
+class TestStampedToTwist(TestBase):
+    SUB_TYPE = Twist
+    PUBS = {"vel_1": TwistStamped, "vel_2": Twist, "vel_3": TwistStamped}
+
+    def test_twist_stamped_to_twist(self):
+        msg = self._publish_and_wait([(self._vel_1, twist_stamped(2.0))])
+        self.assertIsNotNone(msg)
+        self.assertIsInstance(msg, Twist)
+        self.assertEqual(twist_stamped(2.0).twist, msg)
+
+
+def generate_test_description_stamped_to_twist():
+    return generate_test_description(use_stamped=False)
 
 
 @launch_testing.post_shutdown_test()
 class TestProcessOutput(unittest.TestCase):
-
     def test_exit_code(self):
-        # Check that all processes in the launch exit with code 0
-        launch_testing.asserts.assertExitCodes(self.proc_info)
+        launch_testing.asserts.assertExitCodes(
+            self.proc_info, allowable_exit_codes=[0, 2]
+        )

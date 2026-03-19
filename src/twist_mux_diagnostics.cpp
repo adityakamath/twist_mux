@@ -64,7 +64,6 @@ void TwistMuxDiagnostics::updateStatus(const status_type::ConstPtr & status)
 
   status_->main_loop_time = status->main_loop_time;
   status_->reading_age = status->reading_age;
-  status_->use_stamped = status->use_stamped;
 
   update();
 }
@@ -80,25 +79,20 @@ void TwistMuxDiagnostics::diagnostics(diagnostic_updater::DiagnosticStatusWrappe
     stat.summary(OK, "ok");
   }
 
-  if(status_->use_stamped)
-  {
-    for (auto & velocity_stamped_h : *status_->velocity_stamped_hs) {
-      stat.addf(
-        "velocity " + velocity_stamped_h.getName(), " %s (listening to %s @ %fs with priority #%d)",
-        (velocity_stamped_h.isMasked(status_->priority) ? "masked" : "unmasked"),
-        velocity_stamped_h.getTopic().c_str(),
-        velocity_stamped_h.getTimeout().seconds(), static_cast<int>(velocity_stamped_h.getPriority()));
-    }
+  for (auto & velocity_h : *status_->velocity_hs) {
+    stat.addf(
+      "velocity " + velocity_h.getName(), " %s (listening to %s @ %fs with priority #%d)",
+      (velocity_h.isMasked(status_->priority) ? "masked" : "unmasked"),
+      velocity_h.getTopic().c_str(),
+      velocity_h.getTimeout().seconds(), static_cast<int>(velocity_h.getPriority()));
   }
-  else
-  {
-    for (auto & velocity_h : *status_->velocity_hs) {
-      stat.addf(
-        "velocity " + velocity_h.getName(), " %s (listening to %s @ %fs with priority #%d)",
-        (velocity_h.isMasked(status_->priority) ? "masked" : "unmasked"),
-        velocity_h.getTopic().c_str(),
-        velocity_h.getTimeout().seconds(), static_cast<int>(velocity_h.getPriority()));
-    }
+
+  for (auto & velocity_stamped_h : *status_->velocity_stamped_hs) {
+    stat.addf(
+      "velocity " + velocity_stamped_h.getName(), " %s (listening to %s @ %fs with priority #%d)",
+      (velocity_stamped_h.isMasked(status_->priority) ? "masked" : "unmasked"),
+      velocity_stamped_h.getTopic().c_str(),
+      velocity_stamped_h.getTimeout().seconds(), static_cast<int>(velocity_stamped_h.getPriority()));
   }
 
   for (const auto & lock_h : *status_->lock_hs) {
